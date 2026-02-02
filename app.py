@@ -30,11 +30,8 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
-    raise RuntimeError("❌ LINE env vars not set")
-
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
+handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
 
 # ===============================
@@ -46,6 +43,7 @@ sheet = None
 
 CONF_THRESHOLD = 85
 device = "cpu"
+MODEL_PATH = "mobilenetv2_chatbot.pth"
 
 
 # ===============================
@@ -53,17 +51,17 @@ device = "cpu"
 # ===============================
 def init_model():
     global model, class_names
+
     if model is not None:
         return
+
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"❌ Model file not found: {MODEL_PATH}")
 
     model = models.mobilenet_v2(weights=None)
     model.classifier[1] = torch.nn.Linear(1280, 9)
 
-    checkpoint = torch.load(
-        "mobilenetv2_chatbot.pth",
-        map_location=device
-    )
-
+    checkpoint = torch.load(MODEL_PATH, map_location=device)
     model.load_state_dict(checkpoint["model_state"])
     class_names = checkpoint["class_names"]
 
@@ -84,7 +82,7 @@ def init_sheet():
 
 
 # ===============================
-# UTILS
+# TRANSFORM
 # ===============================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -96,6 +94,17 @@ transform = transforms.Compose([
 ])
 
 
+# ===============================
+# HEALTH CHECK (สำคัญมาก)
+# ===============================
+@app.route("/")
+def health_check():
+    return "OK", 200
+
+
+# ===============================
+# PREDICT
+# ===============================
 def predict_image(image_path):
     init_model()
 
@@ -126,6 +135,9 @@ def log_to_sheet(disease):
 # ===============================
 @app.route("/callback", methods=["POST"])
 def callback():
+    if not handler:
+        abort(500, "LINE env vars not set")
+
     signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
 
@@ -146,20 +158,23 @@ def handle_image(event):
         for chunk in content.iter_content():
             f.write(chunk)
 
-    disease, confidence = predict_image(image_path)
-
-    if disease is None:
-        reply = (
-            "📷 วิเคราะห์ภาพไม่ได้ชัดเจน\n"
-            "กรุณาส่งภาพใหม่ให้เห็นใบชัด ๆ 🙏"
-        )
+    try:
+        disease, confidence = predict_image(image_path)
+    except FileNotFoundError:
+        reply = "❌ ระบบยังไม่พร้อม (ไม่พบไฟล์โมเดล)"
     else:
-        log_to_sheet(disease)
-        reply = (
-            f"🌱 ผลการวิเคราะห์\n"
-            f"🦠 โรค: {disease}\n"
-            f"📊 ความมั่นใจ: {confidence:.2f}%"
-        )
+        if disease is None:
+            reply = (
+                "📷 วิเคราะห์ภาพไม่ได้ชัดเจน\n"
+                "กรุณาส่งภาพใหม่ให้เห็นใบชัด ๆ 🙏"
+            )
+        else:
+            log_to_sheet(disease)
+            reply = (
+                f"🌱 ผลการวิเคราะห์\n"
+                f"🦠 โรค: {disease}\n"
+                f"📊 ความมั่นใจ: {confidence:.2f}%"
+            )
 
     line_bot_api.reply_message(
         event.reply_token,
