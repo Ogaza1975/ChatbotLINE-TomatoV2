@@ -1,5 +1,4 @@
 import os
-import json
 from datetime import datetime
 
 from flask import Flask, request, abort
@@ -17,7 +16,7 @@ from PIL import Image
 
 # ===== Google Sheet =====
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.auth import default
 
 
 # ===============================
@@ -27,7 +26,7 @@ app = Flask(__name__)
 
 
 # ===============================
-# LINE CONFIG (ใช้ ENV)
+# LINE CONFIG (ENV)
 # ===============================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
@@ -37,32 +36,18 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 
 # ===============================
-# GOOGLE SHEET CONFIG
+# GOOGLE SHEET CONFIG (Cloud Run way)
 # ===============================
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
-]
+credentials, project = default()
+client = gspread.authorize(credentials)
 
-google_creds = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
-google_creds["private_key"] = google_creds["private_key"].replace("\\n", "\n")
-
-creds = ServiceAccountCredentials.from_json_keyfile_dict(
-    google_creds, scope
-)
-
-client = gspread.authorize(creds)
-
-# 👉 ใส่ Spreadsheet ID ของคุณ
 SPREADSHEET_ID = "1VhCs76yNRjb_voXbPDJu4uP9NHNXcCLzeJV3xnrSnFw"
-
 sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
 
 def log_to_sheet(disease_name):
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # คอลัมน์ M = วันที่, N = ชื่อโรค
     sheet.append_row(
         ["" for _ in range(12)] + [today, disease_name]
     )
@@ -73,7 +58,7 @@ def log_to_sheet(disease_name):
 # ===============================
 # LOAD AI MODEL
 # ===============================
-device = "cpu"  # Cloud Run ไม่มี GPU
+device = "cpu"
 
 model = models.mobilenet_v2(weights=None)
 model.classifier[1] = torch.nn.Linear(1280, 9)
@@ -98,7 +83,7 @@ transform = transforms.Compose([
     )
 ])
 
-CONF_THRESHOLD = 85  # %
+CONF_THRESHOLD = 85
 
 
 def predict_image(image_path):
