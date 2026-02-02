@@ -14,15 +14,19 @@ import torchvision.models as models
 from torchvision import transforms
 from PIL import Image
 
-# ===== Google Sheet =====
-import gspread
-from google.auth import default
-
 
 # ===============================
 # Flask App
 # ===============================
 app = Flask(__name__)
+
+
+# ===============================
+# HEALTH CHECK (Cloud Run)
+# ===============================
+@app.route("/")
+def health():
+    return "OK", 200
 
 
 # ===============================
@@ -36,16 +40,18 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 
 # ===============================
-# GOOGLE SHEET CONFIG (Cloud Run way)
+# GOOGLE SHEET (lazy init)
 # ===============================
-credentials, project = default()
-client = gspread.authorize(credentials)
-
-SPREADSHEET_ID = "1VhCs76yNRjb_voXbPDJu4uP9NHNXcCLzeJV3xnrSnFw"
-sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-
-
 def log_to_sheet(disease_name):
+    from google.auth import default
+    import gspread
+
+    credentials, project = default()
+    client = gspread.authorize(credentials)
+
+    SPREADSHEET_ID = "1VhCs76yNRjb_voXbPDJu4uP9NHNXcCLzeJV3xnrSnFw"
+    sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+
     today = datetime.now().strftime("%Y-%m-%d")
 
     sheet.append_row(
