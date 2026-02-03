@@ -1,5 +1,7 @@
 import os
 from flask import Flask, request, abort
+from datetime import datetime
+
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -9,27 +11,27 @@ from linebot.models import (
     TextSendMessage
 )
 
-from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# ==============================
-# LINE CONFIG (ENV)
-# ==============================
+
+# ==================================================
+# ENV (ต้องตั้งใน Cloud Run)
+# ==================================================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ==============================
+# ==================================================
 # Flask
-# ==============================
+# ==================================================
 app = Flask(__name__)
 
-# ==============================
+# ==================================================
 # Google Sheet
-# ==============================
+# ==================================================
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
@@ -47,34 +49,31 @@ sheet = client.open_by_key(
 
 def log_to_sheet(disease_name):
     now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-
-    # ต่อแถวใหม่เสมอ
     sheet.append_row(
-        ["" for _ in range(12)] + [now, disease_name],
+        [""] * 12 + [now, disease_name],
         value_input_option="USER_ENTERED"
     )
+    print("✅ บันทึก Google Sheet:", disease_name)
 
-    print("✅ บันทึกลง Google Sheet:", disease_name)
 
-
-# ==============================
-# AI PREDICT (ตัวอย่าง)
-# ==============================
+# ==================================================
+# AI PREDICT (เอาโมเดลจริงมาแทนได้)
+# ==================================================
 def predict_image(image_path):
     """
     ตัวอย่าง mock
-    ถ้าใช้โมเดลจริง ค่อยเอามาแทนตรงนี้
+    เปลี่ยนเป็นโมเดลจริงได้โดยไม่กระทบ webhook
     """
     return (
         "Tomato Early Blight",
-        92.35,
-        "🩺 แนวทางเบื้องต้น:\n- ตัดใบที่เป็นโรค\n- ใช้สารป้องกันเชื้อรา\n- หลีกเลี่ยงความชื้นสูง"
+        91.87,
+        "🍂 แนวทางเบื้องต้น:\n- ตัดใบที่เป็นโรค\n- พ่นสารป้องกันเชื้อรา\n- ลดความชื้น"
     )
 
 
-# ==============================
+# ==================================================
 # CALLBACK
-# ==============================
+# ==================================================
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
@@ -85,81 +84,82 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     except Exception as e:
-        print("❌ ERROR:", e)
+        print("❌ CALLBACK ERROR:", e)
 
     return "OK"
 
 
-# ==============================
+# ==================================================
 # TEXT MESSAGE
-# ==============================
+# ==================================================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
-    reply = (
-        "🍅 ส่งรูปมะเขือเทศมาได้เลยครับ\n"
-        "ผมจะช่วยวิเคราะห์โรคให้ 😊"
-    )
-
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=reply)
+        TextSendMessage(
+            text="🍅 ส่งรูปมะเขือเทศมาได้เลยครับ ผมจะช่วยวิเคราะห์โรคให้ 😊"
+        )
     )
 
 
-# ==============================
-# IMAGE MESSAGE (สำคัญที่สุด)
-# ==============================
+# ==================================================
+# IMAGE MESSAGE (แก้ timeout 100%)
+# ==================================================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     print("📸 Image received")
 
-    # ✅ 1. ตอบ LINE ทันที (กัน timeout)
+    # ✅ 1. ตอบ LINE ทันที (สำคัญที่สุด)
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(
-            text="🔍 ได้รับรูปแล้ว กำลังวิเคราะห์โรคมะเขือเทศ กรุณารอสักครู่ครับ…"
+            text="🔍 ได้รับรูปแล้ว กำลังวิเคราะห์ กรุณารอสักครู่ครับ…"
         )
     )
 
-    # ✅ 2. งานหนัก ทำทีหลัง
-    message_id = event.message.id
-    content = line_bot_api.get_message_content(message_id)
+    # ==================================================
+    # หลังจากนี้ LINE ไม่รอแล้ว (ทำงานหนักได้)
+    # ==================================================
+    try:
+        message_id = event.message.id
+        content = line_bot_api.get_message_content(message_id)
 
-    image_path = "/tmp/input.jpg"
-    with open(image_path, "wb") as f:
-        for chunk in content.iter_content():
-            f.write(chunk)
+        image_path = "/tmp/input.jpg"
+        with open(image_path, "wb") as f:
+            for chunk in content.iter_content():
+                f.write(chunk)
 
-    print("✅ Image saved")
+        print("✅ Image saved")
 
-    disease, confidence, detail = predict_image(image_path)
+        disease, confidence, detail = predict_image(image_path)
 
-    if disease:
-        log_to_sheet(disease)
+        if disease:
+            log_to_sheet(disease)
+            result = (
+                f"🌱 ผลการวิเคราะห์โรคมะเขือเทศ\n\n"
+                f"🦠 โรคที่พบ: {disease}\n"
+                f"📊 ความมั่นใจ: {confidence:.2f}%\n\n"
+                f"{detail}"
+            )
+        else:
+            result = (
+                "📷 ไม่สามารถวิเคราะห์ภาพได้\n"
+                "กรุณาส่งภาพใหม่ที่ชัดเจนขึ้นครับ 🙏"
+            )
 
-        result = (
-            f"🌱 ผลการวิเคราะห์โรคมะเขือเทศ\n\n"
-            f"🦠 โรคที่พบ: {disease}\n"
-            f"📊 ความมั่นใจ: {confidence:.2f}%\n\n"
-            f"{detail}"
+        # ✅ 2. ส่งผลลัพธ์รอบสอง
+        line_bot_api.push_message(
+            event.source.user_id,
+            TextSendMessage(text=result)
         )
-    else:
-        result = (
-            "📷 ไม่สามารถวิเคราะห์ภาพได้\n"
-            "กรุณาถ่ายภาพใหม่ให้ชัดเจน เห็นใบหรืออาการผิดปกติครับ 🙏"
-        )
 
-    # ✅ 3. ส่งผลลัพธ์รอบสอง (push)
-    line_bot_api.push_message(
-        event.source.user_id,
-        TextSendMessage(text=result)
-    )
+    except Exception as e:
+        print("❌ IMAGE ERROR:", e)
 
 
-# ==============================
+# ==================================================
 # MAIN
-# ==============================
+# ==================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
