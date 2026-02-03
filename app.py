@@ -14,8 +14,8 @@ from linebot.models import MessageEvent, ImageMessage, TextSendMessage
 app = Flask(__name__)
 
 # --- Configuration ---
-LINE_CHANNEL_ACCESS_TOKEN = "YOUR_CHANNEL_ACCESS_TOKEN"
-LINE_CHANNEL_SECRET = "YOUR_CHANNEL_SECRET"
+LINE_CHANNEL_ACCESS_TOKEN = "yqC119RjwHNyHcEf5Diz9UfHvir0K7Sf7yPUUjEYMSHfYw600Km2uIuu6khwbp+G4Yqu3eKxDJiZw5eWQkGGLQe5Bzg5C9UXQyWpZvSUPm7ZPZ42iJdr9tz8yuD9W6ZFu8jZ1H9bQ8UBH5nVKncJCAdB04t89/1O/w1cDnyilFU="
+LINE_CHANNEL_SECRET = "d90b05c64f9a8dc10246a59d60ec58d3"
 SHEET_KEY = "1LugFaHx26ozkqofcRkIHTfs9hJ8G4VDVwi11gTG9UQk"
 MODEL_PATH = "mobilenetv2_chatbot.pth"
 GOOGLE_CHART_JSON = "tomato-SheetV2.json"
