@@ -1,44 +1,34 @@
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, ImageMessage, TextSendMessage
-
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
-
+import os
 import torch
 import torchvision.models as models
 from torchvision import transforms
 from PIL import Image
-import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
+from flask import Flask, request, abort # ตรวจสอบการสะกด Flask (ตัวใหญ่)
+from linebot import LineBotApi, WebhookHandler
+from linebot.models import MessageEvent, ImageMessage, TextSendMessage
 
-# ---------------- Flask ----------------
+# ---------------- Flask Setup ----------------
 app = Flask(__name__)
 
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get(
-    "LINE_CHANNEL_ACCESS_TOKEN"
-)
-LINE_CHANNEL_SECRET = os.environ.get(
-    "LINE_CHANNEL_SECRET"
-)
+# ดึงค่าจาก Environment Variables ใน Google Cloud Run
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ---------------- Google Sheet ----------------
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
-]
-
-creds = ServiceAccountCredentials.from_json_keyfile_name(
-    "tomato-SheetV2.json", scope
-)
-client = gspread.authorize(creds)
-
-sheet = client.open_by_key(
-    "1LugFaHx26ozkqofcRkIHTfs9hJ8G4VDVwi11gTG9UQk"
-).worksheet("Dashboard")
+# ---------------- Google Sheet Setup ----------------
+try:
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name("Tomato-Sheet.json", scope)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key("1hZpv0BfKQKNHwtFAsT2zRWs-kUsQ2hF3V3Pm5tfp2Oc").worksheet("Dashboard")
+    print("✅ Google Sheet Connected")
+except Exception as e:
+    print(f"❌ Google Sheet Error: {e}")
 
 def log_to_sheet(disease_name):
     now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
@@ -46,21 +36,20 @@ def log_to_sheet(disease_name):
     last_row = len(sheet.get_all_values()) + 1
     sheet.insert_row(row_data, last_row)
 
-# ---------------- AI Model ----------------
+# ---------------- AI Model Setup ----------------
 device = "cpu"
-
 model = models.mobilenet_v2(weights=None)
 model.classifier[1] = torch.nn.Linear(1280, 9)
 
-checkpoint = torch.load(
-    "mobilenetv2_chatbot.pth",
-    map_location=device
-)
-
-model.load_state_dict(checkpoint["model_state"])
-class_names = checkpoint["class_names"]
-
-model.eval()
+# โหลด Model จากไฟล์ใน GitHub Repo
+try:
+    checkpoint = torch.load("mobilenetv2_chatbot.pth", map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
+    class_names = checkpoint["class_names"]
+    model.eval()
+    print("✅ AI Model Loaded")
+except Exception as e:
+    print(f"❌ Model Load Error: {e}")
 
 disease_info = {
     "Tomato_Bacterial_spot": "🍂 โรคใบจุดแบคทีเรีย\nหลีกเลี่ยงน้ำกระเด็น ใช้สารคอปเปอร์",
@@ -77,50 +66,42 @@ disease_info = {
 transform = transforms.Compose([
     transforms.Resize((224,224)),
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485,0.456,0.406],
-        std=[0.229,0.224,0.225]
-    )
+    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
 ])
-
-CONF_THRESHOLD = 85
 
 def predict_image(image_path):
     img = Image.open(image_path).convert("RGB")
     img = transform(img).unsqueeze(0)
-
     with torch.no_grad():
         outputs = model(img)
         probs = torch.softmax(outputs, dim=1)
         conf, pred = torch.max(probs, 1)
-
     confidence = conf.item() * 100
-    if confidence < CONF_THRESHOLD:
+    if confidence < 85:
         return None, confidence, None
-
     disease = class_names[pred.item()]
-    detail = disease_info.get(disease, "")
-    return disease, confidence, detail
+    return disease, confidence, disease_info.get(disease, "")
 
 # ---------------- LINE Webhook ----------------
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
-
     try:
         handler.handle(body, signature)
-    except Exception:
+    except Exception as e:
+        print(f"❌ Handler Error: {e}")
         abort(400)
-
     return "OK"
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
+    print("📸 Image Message Received")
     message_id = event.message.id
     content = line_bot_api.get_message_content(message_id)
 
-    image_path = "input.jpg"
+    # สำคัญ: ต้องใช้ /tmp/ สำหรับเขียนไฟล์ใน Cloud Run
+    image_path = "/tmp/input.jpg"
     with open(image_path, "wb") as f:
         for chunk in content.iter_content():
             f.write(chunk)
@@ -128,24 +109,12 @@ def handle_image(event):
     disease, confidence, detail = predict_image(image_path)
 
     if disease is None:
-        reply = (
-            "📷 ภาพไม่ชัดเจน\n"
-            "กรุณาถ่ายใหม่ให้เห็นใบหรืออาการชัดเจน"
-        )
+        reply = "📷 ภาพไม่ชัดเจน กรุณาถ่ายใหม่ให้เห็นใบชัดเจนครับ"
     else:
         log_to_sheet(disease)
-        reply = (
-            f"🌱 ผลการวิเคราะห์\n\n"
-            f"🦠 โรค: {disease}\n"
-            f"📊 ความมั่นใจ: {confidence:.2f}%\n\n"
-            f"{detail}"
-        )
+        reply = f"🌱 ผลการวิเคราะห์\n\n🦠 โรค: {disease}\n📊 ความมั่นใจ: {confidence:.2f}%\n\n{detail}"
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply)
-    )
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-# ---------------- Run ----------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
