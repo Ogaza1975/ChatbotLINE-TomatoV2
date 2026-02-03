@@ -13,104 +13,92 @@ from linebot.models import MessageEvent, ImageMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# --- Configuration ---
-LINE_CHANNEL_ACCESS_TOKEN = "yqC119RjwHNyHcEf5Diz9UfHvir0K7Sf7yPUUjEYMSHfYw600Km2uIuu6khwbp+G4Yqu3eKxDJiZw5eWQkGGLQe5Bzg5C9UXQyWpZvSUPm7ZPZ42iJdr9tz8yuD9W6ZFu8jZ1H9bQ8UBH5nVKncJCAdB04t89/1O/w1cDnyilFU="
-LINE_CHANNEL_SECRET = "d90b05c64f9a8dc10246a59d60ec58d3"
-SHEET_KEY = "1LugFaHx26ozkqofcRkIHTfs9hJ8G4VDVwi11gTG9UQk"
-MODEL_PATH = "mobilenetv2_chatbot.pth"
-GOOGLE_CHART_JSON = "tomato-SheetV2.json"
+# --- ดึงค่าจาก Environment Variables ---
+# หากคุณไม่ได้ตั้งค่าใน Cloud Run ให้เปลี่ยน os.environ.get(...) เป็น "ค่าจริง" ในอัญประกาศ
+LINE_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
+# ตรวจสอบว่าดึงค่ามาได้จริงไหม (จะปรากฏใน Log)
+print(f"DEBUG: Token loaded: {bool(LINE_ACCESS_TOKEN)}")
+print(f"DEBUG: Secret loaded: {bool(LINE_SECRET)}")
 
-# --- Model Setup ---
-device = "cpu" # Cloud Run รันบน CPU เป็นหลัก
-model = models.mobilenet_v2(weights=None)
-model.classifier[1] = torch.nn.Linear(1280, 9)
+line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_SECRET)
 
-checkpoint = torch.load(MODEL_PATH, map_location=device)
-model.load_state_dict(checkpoint["model_state"])
-class_names = checkpoint["class_names"]
-model.eval()
-
-disease_info = {
-    "Tomato_Bacterial_spot": "🍂 โรคใบจุดแบคทีเรีย\nหลีกเลี่ยงน้ำกระเด็น ใส่สารคอปเปอร์ และใช้เมล็ดพันธุ์ปลอดโรค",
-    "Tomato_Early_blight": "🍁 โรคใบไหม้ระยะแรก\nตัดใบที่เป็นโรค พ่นสารป้องกันเชื้อรา และเว้นระยะปลูก",
-    "Tomato_Late_blight": "🌧️ โรคใบไหม้ระยะท้าย\nพ่นสารป้องกันเชื้อราอย่างเร่งด่วน และกำจัดต้นที่ติดเชื้อ",
-    "Tomato_Leaf_Mold": "🍃 โรคราน้ำค้างใบ\nลดความชื้น เพิ่มการระบายอากาศ",
-    "Tomato_Septoria_leaf_spot": "⚫ โรคใบจุดเซพโทเรีย\nตัดใบเป็นโรค และพ่นสารป้องกันเชื้อรา",
-    "Tomato_Spider_mites_Two_spotted_spider_mite": "🕷️ ไรแดง\nฉีดน้ำแรง ๆ ใต้ใบ หรือใช้สารกำจัดไร",
-    "Tomato__Target_Spot": "🎯 โรคใบจุดเป้า\nพ่นสารป้องกันเชื้อรา และหลีกเลี่ยงน้ำขัง",
-    "Tomato__Tomato_YellowLeaf__Curl_Virus": "🌀 โรคใบหงิกเหลือง\nกำจัดแมลงหวี่ขาว และถอนต้นที่ติดเชื้อ",
-    "Tomato_healthy": "✅ ต้นมะเขือเทศแข็งแรงดี"
-}
-
-transform = transforms.Compose([
-    transforms.Resize((224,224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-])
-
-# --- Functions ---
-def log_to_sheet(disease_name):
-    try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CHART_JSON, scope)
-        client = gspread.authorize(creds)
-        sheet = client.open_by_key(SHEET_KEY).worksheet("Dashboard")
-        now = datetime.now().strftime("%d/%m/%Y")
-        row_data = [""] * 12 + [now, disease_name]
-        last_row = len(sheet.get_all_values()) + 1
-        sheet.insert_row(row_data, last_row)
-    except Exception as e:
-        print(f"Error logging to sheet: {e}")
-
-def predict_image(image_path):
-    img = Image.open(image_path).convert("RGB")
-    img = transform(img).unsqueeze(0).to(device)
-    with torch.no_grad():
-        outputs = model(img)
-        probs = torch.softmax(outputs, dim=1)
-        conf, pred = torch.max(probs, 1)
+# --- โหลดโมเดล (มี Error Handling) ---
+try:
+    device = "cpu"
+    model = models.mobilenet_v2(weights=None)
+    model.classifier[1] = torch.nn.Linear(1280, 9)
     
-    confidence = conf.item() * 100
-    if confidence < 85:
-        return None, confidence, None
+    # ดึง path ปัจจุบันเพื่อให้ชัวร์ว่าหาไฟล์เจอ
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(base_path, "mobilenetv2_chatbot.pth")
     
-    disease = class_names[pred.item()]
-    detail = disease_info.get(disease, "")
-    return disease, confidence, detail
+    print(f"DEBUG: Loading model from {model_path}")
+    checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
+    class_names = checkpoint["class_names"]
+    model.eval()
+    print("✅ Model loaded successfully")
+except Exception as e:
+    print(f"❌ MODEL ERROR: {str(e)}")
 
-# --- Routes ---
+# (ส่วน disease_info และ transform ให้ใช้ตามโค้ดเดิมของคุณ)
+# ... [ใส่โค้ดส่วน disease_info และ transform ของคุณ] ...
+
 @app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers["X-Line-Signature"]
+    signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        print("❌ Invalid Signature Error")
         abort(400)
+    except Exception as e:
+        print(f"❌ Callback Error: {str(e)}")
+        abort(500)
     return "OK"
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    message_id = event.message.id
-    content = line_bot_api.get_message_content(message_id)
-    image_path = "/tmp/input.jpg" # Cloud Run ต้องเขียนไฟล์ลง /tmp
-    with open(image_path, "wb") as f:
-        for chunk in content.iter_content():
-            f.write(chunk)
+    print("--- 📸 Received Image Message ---")
+    try:
+        # 1. ดาวน์โหลดรูป
+        message_id = event.message.id
+        content = line_bot_api.get_message_content(message_id)
+        image_path = "/tmp/input.jpg"
+        with open(image_path, "wb") as f:
+            for chunk in content.iter_content():
+                f.write(chunk)
+        print("✅ Step 1: Image saved to /tmp")
 
-    disease, confidence, detail = predict_image(image_path)
-    if disease is None:
-        reply = "📷 ไม่สามารถวิเคราะห์ได้ชัดเจน กรุณาส่งภาพใหม่ในที่แสงสว่างเพียงพอ"
-    else:
-        log_to_sheet(disease)
-        reply = f"🌱 ผลการวิเคราะห์\n🦠 โรค: {disease}\n📊 ความมั่นใจ: {confidence:.2f}%\n\n{detail}"
+        # 2. ทำนายโรค
+        print("🔄 Step 2: Predicting...")
+        disease, confidence, detail = predict_image(image_path)
+        print(f"✅ Prediction: {disease} ({confidence:.2f}%)")
 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        # 3. บันทึกลง Sheet (แยก Try เพื่อไม่ให้ Sheet พังแล้ว Bot ไม่ตอบ)
+        try:
+            if disease:
+                log_to_sheet(disease)
+                print("✅ Step 3: Logged to Sheet")
+        except Exception as sheet_err:
+            print(f"⚠️ Sheet Logging Failed: {sheet_err}")
 
-if __name__ == "__main__":
-    # Google Cloud Run จะกำหนด PORT มาให้ผ่าน Env Var
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+        # 4. ส่งคำตอบกลับ
+        if disease is None:
+            reply_text = f"📷 ความแม่นยำต่ำเกินไป ({confidence:.2f}%) กรุณาส่งภาพใหม่"
+        else:
+            reply_text = f"🌱 วิเคราะห์สำเร็จ!\n🦠 โรค: {disease}\n📊 มั่นใจ: {confidence:.2f}%\n\n{detail}"
+        
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        print("✅ Step 4: Reply sent")
+
+    except Exception as e:
+        error_msg = f"❌ Error in handle_image: {str(e)}"
+        print(error_msg)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ขออภัย ระบบขัดข้องระหว่างประมวลผล"))
+
+# ... [ส่วนฟังก์ชัน log_to_sheet และ predict_image ของคุณ] ...
