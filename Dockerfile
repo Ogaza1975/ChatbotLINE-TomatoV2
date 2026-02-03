@@ -2,20 +2,9 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# ติดตั้ง dependency ระบบ
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# ติดตั้ง Python libs
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# คัดลอกไฟล์ทั้งหมด
 COPY . .
 
-# เปิดพอร์ต (Cloud Run ใช้ 8080)
-EXPOSE 8080
-
-# สั่งรันแอป
-CMD ["python", "app.py"]
+CMD ["gunicorn", "-b", ":8080", "app:app"]
