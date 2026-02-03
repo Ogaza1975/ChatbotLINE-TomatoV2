@@ -84,7 +84,7 @@ def init_sheet():
     credentials, _ = default()
     client = gspread.authorize(credentials)
 
-    SPREADSHEET_ID = "1VhCs76yNRjb_voXbPDJu4uP9NHNXcCLzeJV3xnrSnFw"
+    SPREADSHEET_ID = "1qzbTSVAKTkBmJRF5gykCNUnXX5C3no99p1gaYLUfqws"
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
     print("✅ Google Sheet connected")
