@@ -1,25 +1,66 @@
-from flask import Flask, request
+from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, ImageMessage, TextSendMessage
-import os
 
-from PIL import Image
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
+
 import torch
 import torchvision.models as models
 from torchvision import transforms
+from PIL import Image
+import os
 
 # ---------------- Flask ----------------
 app = Flask(__name__)
 
-line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
-handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get(
+    "LINE_CHANNEL_ACCESS_TOKEN"
+)
+LINE_CHANNEL_SECRET = os.environ.get(
+    "LINE_CHANNEL_SECRET"
+)
 
-# ---------------- AI (Lazy Load) ----------------
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
+
+# ---------------- Google Sheet ----------------
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
+
+creds = ServiceAccountCredentials.from_json_keyfile_name(
+    "Tomato-Sheet.json", scope
+)
+client = gspread.authorize(creds)
+
+sheet = client.open_by_key(
+    "1hZpv0BfKQKNHwtFAsT2zRWs-kUsQ2hF3V3Pm5tfp2Oc"
+).worksheet("Dashboard")
+
+def log_to_sheet(disease_name):
+    now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    row_data = [""] * 12 + [now, disease_name]
+    last_row = len(sheet.get_all_values()) + 1
+    sheet.insert_row(row_data, last_row)
+
+# ---------------- AI Model ----------------
 device = "cpu"
-model = None
-class_names = None
 
-CONF_THRESHOLD = 85
+model = models.mobilenet_v2(weights=None)
+model.classifier[1] = torch.nn.Linear(1280, 9)
+
+checkpoint = torch.load(
+    "mobilenetv2_chatbot.pth",
+    map_location=device
+)
+
+model.load_state_dict(checkpoint["model_state"])
+class_names = checkpoint["class_names"]
+
+model.eval()
 
 disease_info = {
     "Tomato_Bacterial_spot": "🍂 โรคใบจุดแบคทีเรีย\nหลีกเลี่ยงน้ำกระเด็น ใช้สารคอปเปอร์",
@@ -34,37 +75,17 @@ disease_info = {
 }
 
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((224,224)),
     transforms.ToTensor(),
     transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
+        mean=[0.485,0.456,0.406],
+        std=[0.229,0.224,0.225]
     )
 ])
 
-def load_model():
-    global model, class_names
-    if model is not None:
-        return
-
-    print("🔄 Loading AI model...")
-    model = models.mobilenet_v2(weights=None)
-    model.classifier[1] = torch.nn.Linear(1280, 9)
-
-    checkpoint = torch.load(
-        "mobilenetv2_chatbot.pth",
-        map_location=device
-    )
-
-    model.load_state_dict(checkpoint["model_state"])
-    class_names = checkpoint["class_names"]
-    model.eval()
-
-    print("✅ Model loaded")
+CONF_THRESHOLD = 85
 
 def predict_image(image_path):
-    load_model()
-
     img = Image.open(image_path).convert("RGB")
     img = transform(img).unsqueeze(0)
 
@@ -84,45 +105,46 @@ def predict_image(image_path):
 # ---------------- LINE Webhook ----------------
 @app.route("/callback", methods=["POST"])
 def callback():
-    try:
-        signature = request.headers.get("X-Line-Signature")
-        body = request.get_data(as_text=True)
-        handler.handle(body, signature)
-    except Exception as e:
-        print("❌ Webhook error:", e)
+    signature = request.headers.get("X-Line-Signature")
+    body = request.get_data(as_text=True)
 
-    return "OK", 200   # สำคัญมาก
+    try:
+        handler.handle(body, signature)
+    except Exception:
+        abort(400)
+
+    return "OK"
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    try:
-        message_id = event.message.id
-        content = line_bot_api.get_message_content(message_id)
+    message_id = event.message.id
+    content = line_bot_api.get_message_content(message_id)
 
-        image_path = "/tmp/input.jpg"
-        with open(image_path, "wb") as f:
-            for chunk in content.iter_content():
-                f.write(chunk)
+    image_path = "input.jpg"
+    with open(image_path, "wb") as f:
+        for chunk in content.iter_content():
+            f.write(chunk)
 
-        disease, confidence, detail = predict_image(image_path)
+    disease, confidence, detail = predict_image(image_path)
 
-        if disease is None:
-            reply = "📷 ภาพไม่ชัดเจน กรุณาถ่ายใหม่ให้เห็นอาการชัดเจน"
-        else:
-            reply = (
-                f"🌱 ผลการวิเคราะห์\n\n"
-                f"🦠 โรค: {disease}\n"
-                f"📊 ความมั่นใจ: {confidence:.2f}%\n\n"
-                f"{detail}"
-            )
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply)
+    if disease is None:
+        reply = (
+            "📷 ภาพไม่ชัดเจน\n"
+            "กรุณาถ่ายใหม่ให้เห็นใบหรืออาการชัดเจน"
+        )
+    else:
+        log_to_sheet(disease)
+        reply = (
+            f"🌱 ผลการวิเคราะห์\n\n"
+            f"🦠 โรค: {disease}\n"
+            f"📊 ความมั่นใจ: {confidence:.2f}%\n\n"
+            f"{detail}"
         )
 
-    except Exception as e:
-        print("❌ Image handler error:", e)
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=reply)
+    )
 
 # ---------------- Run ----------------
 if __name__ == "__main__":
