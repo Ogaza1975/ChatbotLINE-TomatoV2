@@ -32,12 +32,12 @@ scope = [
 ]
 
 creds = ServiceAccountCredentials.from_json_keyfile_name(
-    "Tomato-Sheet.json", scope
+    "tomato-SheetV2.json", scope
 )
 client = gspread.authorize(creds)
 
 sheet = client.open_by_key(
-    "1hZpv0BfKQKNHwtFAsT2zRWs-kUsQ2hF3V3Pm5tfp2Oc"
+    "1LugFaHx26ozkqofcRkIHTfs9hJ8G4VDVwi11gTG9UQk"
 ).worksheet("Dashboard")
 
 def log_to_sheet(disease_name):
