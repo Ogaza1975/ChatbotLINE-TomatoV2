@@ -1,3 +1,4 @@
+from flask import Flask, request, abort # ตรวจสอบการสะกด Flask (ตัวใหญ่)
 import os
 import torch
 import torchvision.models as models
@@ -6,7 +7,6 @@ from PIL import Image
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-from flask import Flask, request, abort # ตรวจสอบการสะกด Flask (ตัวใหญ่)
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, ImageMessage, TextSendMessage
 
