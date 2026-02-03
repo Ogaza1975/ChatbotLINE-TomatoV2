@@ -1,6 +1,7 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, ImageMessage, TextSendMessage
+from linebot.exceptions import InvalidSignatureError
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -12,20 +13,20 @@ from torchvision import transforms
 from PIL import Image
 import os
 
-# ---------------- Flask ----------------
+# ==================================================
+# Flask
+# ==================================================
 app = Flask(__name__)
 
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get(
-    "LINE_CHANNEL_ACCESS_TOKEN"
-)
-LINE_CHANNEL_SECRET = os.environ.get(
-    "LINE_CHANNEL_SECRET"
-)
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ---------------- Google Sheet ----------------
+# ==================================================
+# Google Sheet
+# ==================================================
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
@@ -40,28 +41,43 @@ sheet = client.open_by_key(
     "1hZpv0BfKQKNHwtFAsT2zRWs-kUsQ2hF3V3Pm5tfp2Oc"
 ).worksheet("Dashboard")
 
+
 def log_to_sheet(disease_name):
     now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    row_data = [""] * 12 + [now, disease_name]
-    last_row = len(sheet.get_all_values()) + 1
-    sheet.insert_row(row_data, last_row)
+    sheet.append_row(
+        [""] * 12 + [now, disease_name],
+        value_input_option="USER_ENTERED"
+    )
 
-# ---------------- AI Model ----------------
-device = "cpu"
+# ==================================================
+# AI MODEL (ตรงกับไฟล์ .pth)
+# ==================================================
+device = torch.device("cpu")
 
-model = models.mobilenet_v2(weights=None)
-model.classifier[1] = torch.nn.Linear(1280, 9)
-
+# โหลด checkpoint ก่อน
 checkpoint = torch.load(
     "mobilenetv2_chatbot.pth",
     map_location=device
 )
 
-model.load_state_dict(checkpoint["model_state"])
 class_names = checkpoint["class_names"]
+num_classes = len(class_names)
 
+# สร้างโมเดลให้ตรง
+model = models.mobilenet_v2()
+model.classifier[1] = torch.nn.Linear(1280, num_classes)
+
+# โหลด weight
+model.load_state_dict(checkpoint["model_state"], strict=True)
+model.to(device)
 model.eval()
 
+print("✅ Model loaded")
+print("Classes:", class_names)
+
+# ==================================================
+# Disease Info
+# ==================================================
 disease_info = {
     "Tomato_Bacterial_spot": "🍂 โรคใบจุดแบคทีเรีย\nหลีกเลี่ยงน้ำกระเด็น ใช้สารคอปเปอร์",
     "Tomato_Early_blight": "🍁 โรคใบไหม้ระยะแรก\nตัดใบเป็นโรค พ่นสารป้องกันเชื้อรา",
@@ -74,20 +90,24 @@ disease_info = {
     "Tomato_healthy": "✅ ต้นมะเขือเทศแข็งแรงดี"
 }
 
+# ==================================================
+# Transform
+# ==================================================
 transform = transforms.Compose([
-    transforms.Resize((224,224)),
+    transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(
-        mean=[0.485,0.456,0.406],
-        std=[0.229,0.224,0.225]
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
     )
 ])
 
-CONF_THRESHOLD = 85
-
+# ==================================================
+# Predict
+# ==================================================
 def predict_image(image_path):
     img = Image.open(image_path).convert("RGB")
-    img = transform(img).unsqueeze(0)
+    img = transform(img).unsqueeze(0).to(device)
 
     with torch.no_grad():
         outputs = model(img)
@@ -95,14 +115,16 @@ def predict_image(image_path):
         conf, pred = torch.max(probs, 1)
 
     confidence = conf.item() * 100
-    if confidence < CONF_THRESHOLD:
-        return None, confidence, None
-
     disease = class_names[pred.item()]
     detail = disease_info.get(disease, "")
+
+    print("🧠 Predict:", disease, f"{confidence:.2f}%")
+
     return disease, confidence, detail
 
-# ---------------- LINE Webhook ----------------
+# ==================================================
+# LINE Webhook
+# ==================================================
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
@@ -110,42 +132,39 @@ def callback():
 
     try:
         handler.handle(body, signature)
-    except Exception:
+    except InvalidSignatureError:
         abort(400)
 
     return "OK"
+
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     message_id = event.message.id
     content = line_bot_api.get_message_content(message_id)
 
-    image_path = "input.jpg"
+    image_path = "/tmp/input.jpg"
     with open(image_path, "wb") as f:
         for chunk in content.iter_content():
             f.write(chunk)
 
     disease, confidence, detail = predict_image(image_path)
+    log_to_sheet(disease)
 
-    if disease is None:
-        reply = (
-            "📷 ภาพไม่ชัดเจน\n"
-            "กรุณาถ่ายใหม่ให้เห็นใบหรืออาการชัดเจน"
-        )
-    else:
-        log_to_sheet(disease)
-        reply = (
-            f"🌱 ผลการวิเคราะห์\n\n"
-            f"🦠 โรค: {disease}\n"
-            f"📊 ความมั่นใจ: {confidence:.2f}%\n\n"
-            f"{detail}"
-        )
+    reply = (
+        f"🌱 ผลการวิเคราะห์โรคมะเขือเทศ\n\n"
+        f"🦠 โรค: {disease}\n"
+        f"📊 ความมั่นใจ: {confidence:.2f}%\n\n"
+        f"{detail}"
+    )
 
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=reply)
     )
 
-# ---------------- Run ----------------
+# ==================================================
+# Run
+# ==================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
