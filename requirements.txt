@@ -5,3 +5,4 @@ torchvision
 Pillow
 gspread
 oauth2client
+numpy<2
