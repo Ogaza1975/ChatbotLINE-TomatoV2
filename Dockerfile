@@ -9,8 +9,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
+COPY app.py .
 COPY mobilenetv2_chatbot.pth .
-COPY tomato-SheetV2.json .
 
-CMD ["python", "-m", "app.app"]
+CMD ["python", "app.py"]
